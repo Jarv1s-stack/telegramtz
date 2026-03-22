@@ -1,130 +1,114 @@
 require('dotenv').config();
 const TelegramBot=require('node-telegram-bot-api');
-const db=require('./database');
 const{startReminders}=require('./utils/reminders');
 
-const token = process.env.BOT_TOKEN || '8690013421:AAGeZRKnDcO5GJ4Rfe5A9AgR_GZYWTUw6vE';
-const groupId = process.env.GROUP_ID || -1003669989505;
-
-const bot=new TelegramBot(token,{polling:true});
-global.groupId=groupId;
+const bot=new TelegramBot(process.env.BOT_TOKEN,{polling:true});
 
 // ===== ПРОВЕРКА ЧАТА =====
 const isPrivate=(msg)=>msg.chat.type==='private';
 
-// ===== МЕНЮ =====
+// ===== ГЛАВНОЕ МЕНЮ (ВСЕГДА У ИНПУТА) =====
 const mainMenu={
 reply_markup:{
 keyboard:[
-['📋 Профиль','📅 Мои записи'],
-['➕ Записаться','❌ Отменить'],
+['📋 Профиль','📅 Записи'],
+['➕ Записаться','❌ Отмена'],
 ['⚙️ Настройки','ℹ️ Помощь']
 ],
-resize_keyboard:true
+resize_keyboard:true,
+persistent:true
 }
 };
 
-const backMenu={
-reply_markup:{
-keyboard:[
-['⬅️ Назад']
-],
-resize_keyboard:true
-}
-};
+// ===== КОМАНДЫ В МЕНЮ "/" =====
+bot.setMyCommands([
+{command:'/start',description:'🚀 Запуск'},
+{command:'/menu',description:'📲 Меню'},
+{command:'/profile',description:'📋 Профиль'},
+{command:'/help',description:'ℹ️ Помощь'}
+]);
 
 // ===== СТАРТ =====
-bot.onText(/\/start/,(msg)=>{
+bot.onText(/\/start/,msg=>{
 if(!isPrivate(msg))return;
 
 bot.sendMessage(msg.chat.id,
-'👋 Добро пожаловать!\n https://t.me/+K7ExNKp7UUs5MDYy\n\n\nВыбирай 👇',
+'👋 Добро пожаловать\n\n🔥 У тебя теперь нормальный интерфейс',
 mainMenu);
 });
 
-// ===== MENU =====
-bot.onText(/\/menu/,(msg)=>{
+// ===== МЕНЮ =====
+bot.onText(/\/menu/,msg=>{
 if(!isPrivate(msg))return;
 bot.sendMessage(msg.chat.id,'📲 Главное меню',mainMenu);
 });
 
-// ===== HELP =====
-bot.onText(/\/help/,(msg)=>{
+// ===== ПРОФИЛЬ =====
+bot.onText(/\/profile/,msg=>{
 bot.sendMessage(msg.chat.id,
-'📖 Команды:\n\n'+
-'/start — запуск\n'+
-'/menu — меню\n'+
-'/help — помощь\n\n'+
-'Или просто жми кнопки 👇'
-);
+`👤 Профиль\n\nID: ${msg.from.id}\nИмя: ${msg.from.first_name || ''}\n@${msg.from.username || 'нет'}`,
+mainMenu);
 });
 
-// ===== ОБРАБОТКА КНОПОК =====
-bot.on('message',async(msg)=>{
+// ===== HELP =====
+bot.onText(/\/help/,msg=>{
+bot.sendMessage(msg.chat.id,
+'ℹ️ Используй кнопки снизу\n\nЭто быстрее чем команды',
+mainMenu);
+});
+
+// ===== КНОПКИ =====
+bot.on('message',msg=>{
 if(!msg.text)return;
 if(!isPrivate(msg))return;
 
 const chatId=msg.chat.id;
 const text=msg.text;
 
-// === НАЗАД ===
-if(text==='⬅️ Назад'){
-return bot.sendMessage(chatId,'🔙 Главное меню',mainMenu);
-}
-
-// === ПРОФИЛЬ ===
+// ПРОФИЛЬ
 if(text==='📋 Профиль'){
 return bot.sendMessage(chatId,
-'👤 Профиль:\n\n'+
-`ID: ${msg.from.id}\n`+
-`Имя: ${msg.from.first_name || ''}\n`+
-`Username: @${msg.from.username || 'нет'}`
-,backMenu);
+`👤 Профиль\n\nID: ${msg.from.id}\nИмя: ${msg.from.first_name || ''}`,
+mainMenu);
 }
 
-// === МОИ ЗАПИСИ ===
-if(text==='📅 Мои записи'){
+// ЗАПИСИ
+if(text==='📅 Записи'){
 return bot.sendMessage(chatId,
-'📅 Твои записи:\n\nПока пусто 😢',
-backMenu);
+'📅 У тебя пока нет записей',
+mainMenu);
 }
 
-// === ЗАПИСАТЬСЯ ===
+// ЗАПИСАТЬСЯ
 if(text==='➕ Записаться'){
 return bot.sendMessage(chatId,
-'📝 Запись:\n\nНапиши дату в формате:\n👉 25.03 18:00',
-backMenu);
+'📝 Введи дату:\nНапример: 25.03 18:00',
+mainMenu);
 }
 
-// === ОТМЕНА ===
-if(text==='❌ Отменить'){
+// ОТМЕНА
+if(text==='❌ Отмена'){
 return bot.sendMessage(chatId,
-'❌ Отмена записи:\n\nНапиши ID записи',
-backMenu);
+'❌ Введи ID записи',
+mainMenu);
 }
 
-// === НАСТРОЙКИ ===
+// НАСТРОЙКИ
 if(text==='⚙️ Настройки'){
 return bot.sendMessage(chatId,
-'⚙️ Настройки:\n\n(скоро будет)',
-backMenu);
+'⚙️ Настройки (скоро)',
+mainMenu);
 }
 
-// === HELP ===
+// ПОМОЩЬ
 if(text==='ℹ️ Помощь'){
 return bot.sendMessage(chatId,
-'ℹ️ Просто используй кнопки\n\nЕсли сломается — /start'
-);
+'ℹ️ Просто жми кнопки снизу 👇',
+mainMenu);
 }
-
 });
 
-// ===== INLINE CALLBACK (если пригодится потом) =====
-bot.on('callback_query',(query)=>{
-bot.answerCallbackQuery(query.id);
-});
-
-// ===== ПОДКЛЮЧЕНИЕ ХЕНДЛЕРОВ =====
+// ===== ХЕНДЛЕРЫ =====
 const registration=require('./handlers/registration');
 const admin=require('./handlers/admin');
 const master=require('./handlers/master');
@@ -140,4 +124,4 @@ callbacks.register(bot);
 // ===== CRON =====
 startReminders(bot);
 
-console.log('🔥 Бот с норм UI запущен');
+console.log('✅ UI готов (кнопки у инпута + команды)');
