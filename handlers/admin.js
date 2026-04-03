@@ -1,45 +1,48 @@
 const db = require('../database');
-const { registrationState } = require('./registration'); // для доступа к состояниям (не обязательно)
 
-// Состояния для создания заявки
 const createRequestState = new Map();
 
 function register(bot) {
-  // Аутентификация администратора по паролю
+  // Аутентификация администратора
   bot.onText(/\/admin (.+)/, (msg, match) => {
     const chatId = msg.chat.id;
     const userId = msg.from.id;
     const password = match[1];
 
-    const stored = db.prepare('SELECT value FROM settings WHERE key = ?').get('admin_password');
-    if (password === stored.value) {
-      const existing = db.prepare('SELECT * FROM users WHERE telegram_id = ?').get(userId);
-      if (existing) {
-        db.prepare('UPDATE users SET role = ? WHERE telegram_id = ?').run('admin', userId);
-      } else {
-        db.prepare('INSERT INTO users (telegram_id, role, name) VALUES (?, ?, ?)').run(userId, 'admin', 'Admin');
-      }
-      bot.sendMessage(chatId, '✅ Вы стали администратором!');
+    const stored = db.prepare("SELECT value FROM settings WHERE key = 'admin_password'").get();
+    if (!stored || password !== stored.value) {
+      return bot.sendMessage(chatId, '❌ Неверный пароль.');
+    }
+
+    const existing = db.prepare('SELECT * FROM users WHERE telegram_id = ?').get(userId);
+    if (existing) {
+      db.prepare('UPDATE users SET role = ?, status = ? WHERE telegram_id = ?').run('admin', 'active', userId);
     } else {
-      bot.sendMessage(chatId, '❌ Неверный пароль.');
-    }
-  });
-
-  // Команда создания заявки
-  bot.onText(/\/create/, (msg) => {
-    const chatId = msg.chat.id;
-    const userId = msg.from.id;
-    const user = db.prepare('SELECT role FROM users WHERE telegram_id = ?').get(userId);
-    if (!user || user.role !== 'admin') {
-      return bot.sendMessage(chatId, '❌ Только администратор может создавать заявки.');
+      db.prepare('INSERT INTO users (telegram_id, role, name, status) VALUES (?, ?, ?, ?)').run(userId, 'admin', 'Admin', 'active');
     }
 
-    createRequestState.set(chatId, { step: 'service', data: { created_by: userId } });
-    bot.sendMessage(chatId, '🆕 Создание новой заявки.\nВведите тип услуги (установка/ремонт/заправка/чистка):');
+    const adminMenu = {
+      reply_markup: {
+        keyboard: [
+          ['➕ Создать заявку', '📋 Все заявки'],
+          ['👥 Мастера', '🕐 Свободное время'],
+          ['📊 Статистика', '⚙️ Настройки'],
+          ['ℹ️ Помощь']
+        ],
+        resize_keyboard: true,
+        persistent: true
+      }
+    };
+
+    bot.sendMessage(chatId, '🛡 *Вы стали администратором!*\n\nТеперь у вас есть доступ к полному меню управления.', {
+      parse_mode: 'Markdown',
+      ...adminMenu
+    });
   });
 
   // Обработка шагов создания заявки
   bot.on('message', (msg) => {
+    if (msg.chat.type !== 'private') return;
     const chatId = msg.chat.id;
     const state = createRequestState.get(chatId);
     if (!state) return;
@@ -47,158 +50,196 @@ function register(bot) {
     const text = msg.text;
     const data = state.data;
 
+    // Пропускаем команды
+    if (text && text.startsWith('/')) return;
+
     const steps = {
       service: () => {
+        if (!text) return;
         data.service_type = text;
         state.step = 'address';
-        bot.sendMessage(chatId, 'Введите полный адрес:');
+        bot.sendMessage(chatId,
+          `🆕 *Создание заявки*\n\n✅ Услуга: *${text}*\n\n*Шаг 2 из 7 — Введите полный адрес:*`,
+          { parse_mode: 'Markdown' }
+        );
       },
       address: () => {
+        if (!text) return;
         data.address = text;
         state.step = 'district';
-        bot.sendMessage(chatId, 'Введите район:');
+        bot.sendMessage(chatId,
+          `🆕 *Создание заявки*\n\n✅ Адрес: *${text}*\n\n*Шаг 3 из 7 — Введите район:*`,
+          { parse_mode: 'Markdown' }
+        );
       },
       district: () => {
+        if (!text) return;
         data.district = text;
         state.step = 'date';
-        bot.sendMessage(chatId, 'Введите дату (ГГГГ-ММ-ДД):');
+        bot.sendMessage(chatId,
+          `🆕 *Создание заявки*\n\n✅ Район: *${text}*\n\n*Шаг 4 из 7 — Введите дату:*\nФормат: ГГГГ-ММ-ДД`,
+          { parse_mode: 'Markdown' }
+        );
       },
       date: () => {
+        if (!text) return;
         if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) {
-          return bot.sendMessage(chatId, '❌ Неверный формат. Используйте ГГГГ-ММ-ДД');
+          return bot.sendMessage(chatId, '❌ Неверный формат. Используйте: *ГГГГ-ММ-ДД*\nНапример: 2025-06-15', { parse_mode: 'Markdown' });
         }
         data.date = text;
         state.step = 'time';
-        bot.sendMessage(chatId, 'Введите время (ЧЧ:ММ):');
+        bot.sendMessage(chatId,
+          `🆕 *Создание заявки*\n\n✅ Дата: *${text}*\n\n*Шаг 5 из 7 — Введите время:*\nФормат: ЧЧ:ММ`,
+          { parse_mode: 'Markdown' }
+        );
       },
-time: () => {
-  if (!/^\d{2}:\d{2}$/.test(text)) {
-    return bot.sendMessage(chatId, '❌ Неверный формат. Используйте ЧЧ:ММ');
-  }
-  data.time = text;
-  state.step = 'phone';  // ← сразу переходим к телефону
-  bot.sendMessage(chatId, 'Телефон клиента:');
-},
-phone: () => {
-  data.client_phone = text;
-  state.step = 'comment';
-  bot.sendMessage(chatId, 'Комментарий:');
-},
-comment: () => {
-  data.comment = text;
-  state.step = 'commission';
-  bot.sendMessage(chatId, 'Размер комиссии (в тенге):');
-},
-commission: () => {
-  const commission = parseInt(text);
-  if (isNaN(commission)) {
-    return bot.sendMessage(chatId, '❌ Введите число.');
-  }
-  data.commission = commission;
+      time: () => {
+        if (!text) return;
+        if (!/^\d{2}:\d{2}$/.test(text)) {
+          return bot.sendMessage(chatId, '❌ Неверный формат. Используйте: *ЧЧ:ММ*\nНапример: 14:30', { parse_mode: 'Markdown' });
+        }
+        data.time = text;
+        state.step = 'phone';
+        bot.sendMessage(chatId,
+          `🆕 *Создание заявки*\n\n✅ Время: *${text}*\n\n*Шаг 6 из 7 — Телефон клиента:*`,
+          { parse_mode: 'Markdown' }
+        );
+      },
+      phone: () => {
+        if (!text) return;
+        data.client_phone = text;
+        state.step = 'comment';
+        bot.sendMessage(chatId,
+          `🆕 *Создание заявки*\n\n✅ Телефон: *${text}*\n\n*Шаг 7 из 7 — Комментарий и комиссия*\n\nВведите комментарий (или напишите "нет"):`,
+          { parse_mode: 'Markdown' }
+        );
+      },
+      comment: () => {
+        if (!text) return;
+        data.comment = text;
+        state.step = 'commission';
+        bot.sendMessage(chatId,
+          `💵 *Размер комиссии в тенге:*\n(только число, например: 5000)`,
+          { parse_mode: 'Markdown' }
+        );
+      },
+      commission: () => {
+        if (!text) return;
+        const commission = parseInt(text);
+        if (isNaN(commission) || commission < 0) {
+          return bot.sendMessage(chatId, '❌ Введите корректную сумму числом.');
+        }
+        data.commission = commission;
 
-  // Сохраняем заявку в БД (без wall_material)
-  const insert = db.prepare(`
-    INSERT INTO requests
-      (service_type, address, district, date, time, client_phone, comment, commission, status, created_by)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-  const result = insert.run(
-    data.service_type, data.address, data.district, data.date, data.time,
-    data.client_phone, data.comment, data.commission, 'NEW', data.created_by
-  );
-  const requestId = result.lastInsertRowid;
+        // Сохраняем заявку
+        const result = db.prepare(`
+          INSERT INTO requests (service_type, address, district, date, time, client_phone, comment, commission, status, created_by)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'NEW', ?)
+        `).run(data.service_type, data.address, data.district, data.date, data.time, data.client_phone, data.comment, data.commission, data.created_by);
 
-  // Отправляем в группу (без материала стены)
-  const groupId = global.groupId;
-  const groupMessage = `🆕 Заявка №${requestId}
-Услуга: ${data.service_type}
-Район: ${data.district}
-Дата: ${data.date} ${data.time}`; // строка о материале стены удалена
+        const requestId = result.lastInsertRowid;
+        const groupId = global.groupId;
 
-  const keyboard = {
-    inline_keyboard: [
-      [{ text: '✅ Забрать', callback_data: `take_${requestId}` }]
-    ]
-  };
-  bot.sendMessage(groupId, groupMessage, { reply_markup: keyboard });
+        // Красивое сообщение в группу
+        const groupMessage =
+          `🆕 *Новая заявка №${requestId}*\n\n` +
+          `🔧 Услуга: ${data.service_type}\n` +
+          `📍 Район: ${data.district}\n` +
+          `📅 Дата: ${data.date} в ${data.time}\n` +
+          `💵 Комиссия: ${data.commission} тг`;
 
-  bot.sendMessage(chatId, `✅ Заявка №${requestId} создана и опубликована в группе.`);
-  createRequestState.delete(chatId);
-}
+        const keyboard = {
+          inline_keyboard: [[{ text: '✅ Забрать заявку', callback_data: `take_${requestId}` }]]
+        };
+
+        bot.sendMessage(groupId, groupMessage, { parse_mode: 'Markdown', reply_markup: keyboard });
+
+        // Подтверждение администратору
+        bot.sendMessage(chatId,
+          `✅ *Заявка №${requestId} создана!*\n\nОна опубликована в группе. Мастера уже видят её.`,
+          {
+            parse_mode: 'Markdown',
+            reply_markup: {
+              keyboard: [
+                ['➕ Создать заявку', '📋 Все заявки'],
+                ['👥 Мастера', '🕐 Свободное время'],
+                ['📊 Статистика', '⚙️ Настройки'],
+                ['ℹ️ Помощь']
+              ],
+              resize_keyboard: true,
+              persistent: true
+            }
+          }
+        );
+        createRequestState.delete(chatId);
+      },
+
+      // Шаги проверки свободного времени
+      free_date: () => {
+        if (!text) return;
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) {
+          return bot.sendMessage(chatId, '❌ Неверный формат. Используйте: *ГГГГ-ММ-ДД*', { parse_mode: 'Markdown' });
+        }
+        state.step = 'free_time';
+        state.data = { date: text };
+        bot.sendMessage(chatId,
+          `✅ Дата: *${text}*\n\nВведите время (*ЧЧ:ММ*):`,
+          { parse_mode: 'Markdown' }
+        );
+      },
+      free_time: () => {
+        if (!text) return;
+        if (!/^\d{2}:\d{2}$/.test(text)) {
+          return bot.sendMessage(chatId, '❌ Неверный формат. Используйте: *ЧЧ:ММ*', { parse_mode: 'Markdown' });
+        }
+        const { date } = state.data;
+        const masters = db.prepare("SELECT * FROM users WHERE role = 'master' AND status = 'active'").all();
+
+        let response = `📅 *Доступность на ${date} в ${text}:*\n\n`;
+
+        for (const master of masters) {
+          const dailyCount = db.prepare(`
+            SELECT COUNT(*) as cnt FROM requests
+            WHERE master_id = ? AND date = ? AND status NOT IN ('PAID', 'CANCELLED')
+          `).get(master.telegram_id, date).cnt;
+
+          const targetStart = new Date(`${date}T${text}:00`);
+          const targetEnd = new Date(targetStart.getTime() + 60 * 60 * 1000);
+          const reqs = db.prepare(`
+            SELECT time FROM requests WHERE master_id = ? AND date = ? AND status NOT IN ('PAID', 'CANCELLED')
+          `).all(master.telegram_id, date);
+
+          const conflict = reqs.some(req => {
+            const s = new Date(`${date}T${req.time}:00`);
+            const e = new Date(s.getTime() + 60 * 60 * 1000);
+            return targetStart < e && targetEnd > s;
+          });
+
+          const status = conflict ? '🔴 Занят' : dailyCount >= 4 ? '🟡 Лимит' : '🟢 Свободен';
+          const rating = (master.rating || 0).toFixed(1);
+          response += `${status} *${master.name}* ⭐${rating} (${dailyCount}/4 заявок)\n`;
+        }
+
+        if (masters.length === 0) response += '_Нет активных мастеров_';
+
+        bot.sendMessage(chatId, response, {
+          parse_mode: 'Markdown',
+          reply_markup: {
+            keyboard: [
+              ['➕ Создать заявку', '📋 Все заявки'],
+              ['👥 Мастера', '🕐 Свободное время'],
+              ['📊 Статистика', '⚙️ Настройки'],
+              ['ℹ️ Помощь']
+            ],
+            resize_keyboard: true,
+            persistent: true
+          }
+        });
+        createRequestState.delete(chatId);
+      }
     };
 
     if (steps[state.step]) steps[state.step]();
-  });
-
-  // Команда /free для просмотра свободного времени (упрощённо)
-  bot.onText(/\/free/, (msg) => {
-    const chatId = msg.chat.id;
-    const userId = msg.from.id;
-    const user = db.prepare('SELECT role FROM users WHERE telegram_id = ?').get(userId);
-    if (!user || user.role !== 'admin') return;
-
-    // Запрашиваем дату
-    createRequestState.set(chatId, { step: 'free_date' }); // переиспользуем временное хранилище
-    bot.sendMessage(chatId, 'Введите дату для проверки (ГГГГ-ММ-ДД):');
-  });
-
-  // Продолжение /free
-  bot.on('message', (msg) => {
-    const chatId = msg.chat.id;
-    const state = createRequestState.get(chatId);
-    if (!state || state.step !== 'free_date') return;
-
-    const date = msg.text;
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-      return bot.sendMessage(chatId, '❌ Неверный формат. Используйте ГГГГ-ММ-ДД');
-    }
-
-    // Запрашиваем время
-    state.step = 'free_time';
-    state.data = { date };
-    bot.sendMessage(chatId, 'Введите время (ЧЧ:ММ):');
-  });
-
-  bot.on('message', (msg) => {
-    const chatId = msg.chat.id;
-    const state = createRequestState.get(chatId);
-    if (!state || state.step !== 'free_time') return;
-
-    const time = msg.text;
-    if (!/^\d{2}:\d{2}$/.test(time)) {
-      return bot.sendMessage(chatId, '❌ Неверный формат. Используйте ЧЧ:ММ');
-    }
-
-    const date = state.data.date;
-    // Получаем всех активных мастеров
-    const masters = db.prepare('SELECT telegram_id, name, rating FROM users WHERE role = ? AND status = ?').all('master', 'active');
-
-    let response = `📅 Свободные мастера на ${date} ${time}:\n\n`;
-    for (const master of masters) {
-      const dailyCount = db.prepare(`
-        SELECT COUNT(*) as cnt FROM requests
-        WHERE master_id = ? AND date = ? AND status NOT IN ('PAID', 'CANCELLED')
-      `).get(master.telegram_id, date).cnt;
-
-      // Проверка на пересечение времени
-      const conflict = db.prepare(`
-        SELECT id FROM requests
-        WHERE master_id = ? AND date = ? AND status NOT IN ('PAID', 'CANCELLED')
-      `).all(master.telegram_id, date).some(req => {
-        const reqStart = new Date(`${req.date}T${req.time}:00`);
-        const reqEnd = new Date(reqStart.getTime() + 60 * 60 * 1000);
-        const targetStart = new Date(`${date}T${time}:00`);
-        const targetEnd = new Date(targetStart.getTime() + 60 * 60 * 1000);
-        return targetStart < reqEnd && targetEnd > reqStart;
-      });
-
-      const status = conflict ? '❌ Занят' : '✅ Свободен';
-      const rating = master.rating ? master.rating.toFixed(1) : '0.0';
-      response += `${master.name} (рейтинг: ${rating}) ...`;
-    }
-
-    bot.sendMessage(chatId, response);
-    createRequestState.delete(chatId);
   });
 }
 

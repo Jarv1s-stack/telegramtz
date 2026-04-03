@@ -11,81 +11,79 @@ function register(bot) {
     const chatId = query.message.chat.id;
     const messageId = query.message.message_id;
 
-    // Проверяем, активен ли мастер
-    const master = db.prepare('SELECT * FROM users WHERE telegram_id = ? AND status = ?').get(masterId, 'active');
+    const master = db.prepare("SELECT * FROM users WHERE telegram_id = ? AND status = 'active'").get(masterId);
     if (!master) {
-      return bot.answerCallbackQuery(query.id, { text: '❌ Вы не активны или не зарегистрированы.' });
+      return bot.answerCallbackQuery(query.id, {
+        text: '❌ Вы не активны или не зарегистрированы.',
+        show_alert: true
+      });
     }
 
-    // Транзакция
     db.exec('BEGIN');
     try {
-      // Получаем заявку и проверяем, что она ещё NEW
-      const request = db.prepare('SELECT * FROM requests WHERE id = ? AND status = ?').get(requestId, 'NEW');
-      if (!request) {
-        throw new Error('❌ Заявка уже забрана');
-      }
+      const request = db.prepare("SELECT * FROM requests WHERE id = ? AND status = 'NEW'").get(requestId);
+      if (!request) throw new Error('❌ Заявка уже забрана другим мастером');
 
-      // Проверки лимитов
       const dailyCount = checks.getMasterDailyCount(masterId, request.date);
-      if (dailyCount >= 4) throw new Error('❌ Лимит 4 заявки в день');
-      if (checks.hasUnpaidRequest(masterId)) throw new Error('❌ У вас есть неоплаченная заявка');
-      if (checks.hasPendingRescheduleOrCancel(masterId)) throw new Error('❌ У вас есть неподтверждённый перенос/отказ');
-      if (checks.hasTimeConflict(masterId, request.date, request.time)) throw new Error('❌ Пересечение времени с другой заявкой');
+      if (dailyCount >= 4) throw new Error('❌ Лимит 4 заявки в день достигнут');
+      if (checks.hasUnpaidRequest(masterId)) throw new Error('❌ У вас есть неоплаченная заявка — сначала завершите её');
+      if (checks.hasPendingRescheduleOrCancel(masterId)) throw new Error('❌ У вас есть ожидающий перенос или отказ');
+      if (checks.hasTimeConflict(masterId, request.date, request.time)) throw new Error('❌ Время пересекается с другой вашей заявкой');
 
-      // Назначаем мастера
       db.prepare(`
-        UPDATE requests SET status = 'TAKEN', master_id = ?, taken_at = CURRENT_TIMESTAMP
-        WHERE id = ?
+        UPDATE requests SET status = 'TAKEN', master_id = ?, taken_at = CURRENT_TIMESTAMP WHERE id = ?
       `).run(masterId, requestId);
 
       db.exec('COMMIT');
 
-      // Отправляем мастеру полную информацию в личку
-      const fullInfo = `✅ Вы взяли заявку №${request.id}
-Услуга: ${request.service_type}
-Полный адрес: ${request.address}
-Дата/время: ${request.date} ${request.time}
-Телефон клиента: ${request.client_phone}
-Материал стены: ${request.wall_material}
-Комментарий: ${request.comment}
-Комиссия: ${request.commission} тг`;
+      // Красивое сообщение мастеру
+      const fullInfo =
+        `✅ *Вы взяли заявку №${request.id}*\n\n` +
+        `🔧 Услуга: ${request.service_type}\n` +
+        `🏠 Адрес: ${request.address}\n` +
+        `📍 Район: ${request.district}\n` +
+        `📅 Дата: ${request.date} в ${request.time}\n` +
+        `📞 Клиент: ${request.client_phone}\n` +
+        (request.comment && request.comment !== 'нет' ? `💬 Коммент: ${request.comment}\n` : '') +
+        `💵 Комиссия: ${request.commission} тг`;
 
       const privateKeyboard = {
         inline_keyboard: [
-          [{ text: '✅ Завершил заявку', callback_data: `complete_${request.id}` }],
-          [{ text: '❌ Запросить отказ', callback_data: `reqcancel_${request.id}` }],
-          [{ text: '⏳ Запросить перенос', callback_data: `reqresched_${request.id}` }]
+          [{ text: '✅ Я завершил работу', callback_data: `complete_${request.id}` }],
+          [
+            { text: '⏳ Запросить перенос', callback_data: `reqresched_${request.id}` },
+            { text: '❌ Отказаться', callback_data: `reqcancel_${request.id}` }
+          ]
         ]
       };
-      bot.sendMessage(masterId, fullInfo, { reply_markup: privateKeyboard });
+      bot.sendMessage(masterId, fullInfo, { parse_mode: 'Markdown', reply_markup: privateKeyboard });
 
-      // Уведомляем всех админов
-      const admins = db.prepare('SELECT telegram_id FROM users WHERE role = ?').all('admin');
-      const adminKeyboard = {
-        inline_keyboard: [
-          [{ text: '👀 Посмотреть', callback_data: `view_${request.id}` }]
-        ]
-      };
+      // Уведомляем админов
+      const admins = db.prepare("SELECT telegram_id FROM users WHERE role = 'admin'").all();
       for (const admin of admins) {
         bot.sendMessage(admin.telegram_id,
-            `👤 Мастер ${master.name} принял заявку №${request.id}\nРейтинг: ${master.rating}\nЗаявок на эту дату: ${dailyCount + 1}/4`,
-            { reply_markup: adminKeyboard }
+          `🔧 *Мастер взял заявку №${request.id}*\n\n` +
+          `👤 Мастер: ${master.name}\n` +
+          `⭐ Рейтинг: ${(master.rating || 0).toFixed(1)}\n` +
+          `📊 Заявок на ${request.date}: ${dailyCount + 1}/4`,
+          {
+            parse_mode: 'Markdown',
+            reply_markup: { inline_keyboard: [[{ text: '🔍 Детали заявки', callback_data: `view_full_${request.id}` }]] }
+          }
         );
       }
 
-      // Редактируем сообщение в группе
-      bot.editMessageText(`${query.message.text}\n\n✅ Забрал: ${master.name}`, {
-        chat_id: chatId,
-        message_id: messageId,
-        reply_markup: { inline_keyboard: [] }
-      });
+      // Обновляем сообщение в группе
+      bot.editMessageText(
+        query.message.text + `\n\n🔧 *Забрал:* ${master.name}`,
+        { chat_id: chatId, message_id: messageId, parse_mode: 'Markdown', reply_markup: { inline_keyboard: [] } }
+      );
 
-      bot.answerCallbackQuery(query.id, { text: '✅ Заявка взята!' });
+      bot.answerCallbackQuery(query.id, { text: '✅ Заявка успешно взята!' });
 
     } catch (err) {
       db.exec('ROLLBACK');
-      bot.answerCallbackQuery(query.id, { text: err.message });
+      bot.answerCallbackQuery(query.id, { text: err.message, show_alert: true });
     }
   });
 }
